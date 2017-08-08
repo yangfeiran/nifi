@@ -20,6 +20,7 @@ import java.io.File;
 import java.io.FileInputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.net.MalformedURLException;
 import java.net.URI;
 import java.net.URISyntaxException;
 import java.security.KeyManagementException;
@@ -100,7 +101,7 @@ import org.apache.nifi.util.StopWatch;
 import org.apache.nifi.util.Tuple;
 
 @Tags({"get", "fetch", "poll", "http", "https", "ingest", "source", "input"})
-@InputRequirement(Requirement.INPUT_FORBIDDEN)
+@InputRequirement(Requirement.INPUT_ALLOWED)
 @CapabilityDescription("Fetches data from an HTTP or HTTPS URL and writes the data to the content of a FlowFile. Once the content has been fetched, the ETag and Last Modified "
     + "dates are remembered (if the web server supports these concepts). This allows the Processor to fetch new data only if the remote data has changed or until the state is cleared. That is, "
     + "once the content has been fetched from the given URL, it will not be fetched again until the content on the remote server changes. Note that due to limitations on state "
@@ -234,6 +235,10 @@ public class GetHTTP extends AbstractSessionFactoryProcessor {
             .name("success")
             .description("All files are transferred to the success relationship")
             .build();
+    public static final Relationship REL_ORIGINAL = new Relationship.Builder()
+            .name("original")
+            .description("All files are transferred to the origianl relationship")
+            .build();
 
     public static final String LAST_MODIFIED_DATE_PATTERN_RFC1123 = "EEE, dd MMM yyyy HH:mm:ss zzz";
 
@@ -252,6 +257,7 @@ public class GetHTTP extends AbstractSessionFactoryProcessor {
     protected void init(final ProcessorInitializationContext context) {
         final Set<Relationship> relationships = new HashSet<>();
         relationships.add(REL_SUCCESS);
+        relationships.add(REL_ORIGINAL);
         this.relationships = Collections.unmodifiableSet(relationships);
 
         final List<PropertyDescriptor> properties = new ArrayList<>();
@@ -368,19 +374,22 @@ public class GetHTTP extends AbstractSessionFactoryProcessor {
         final ProcessSession session = sessionFactory.createSession();
         final FlowFile incomingFlowFile = session.get();
         if (incomingFlowFile != null) {
-            session.transfer(incomingFlowFile, REL_SUCCESS);
-            logger.warn("found FlowFile {} in input queue; transferring to success", new Object[]{incomingFlowFile});
+            session.transfer(incomingFlowFile, REL_ORIGINAL);
+            logger.warn("found FlowFile {} in input queue; transferring to original", new Object[]{incomingFlowFile});
         }
 
         // get the URL
-        final String url = context.getProperty(URL).evaluateAttributeExpressions().getValue();
-        final URI uri;
+        final String url = context.getProperty(URL).evaluateAttributeExpressions(incomingFlowFile).getValue();
+        URI uri = null;
         String source = url;
         try {
-            uri = new URI(url);
+            java.net.URL url1 = new java.net.URL(url);
+            uri = new URI(url1.getProtocol(), url1.getHost(), url1.getPath(), url1.getQuery(), null);
             source = uri.getHost();
         } catch (final URISyntaxException swallow) {
             // this won't happen as the url has already been validated
+        } catch (MalformedURLException e) {
+            e.printStackTrace();
         }
 
         // get the ssl context service
@@ -472,7 +481,7 @@ public class GetHTTP extends AbstractSessionFactoryProcessor {
             }
 
             // create request
-            final HttpGet get = new HttpGet(url);
+            final HttpGet get = new HttpGet(uri);
             get.setConfig(requestConfigBuilder.build());
 
             final StateMap beforeStateMap;
